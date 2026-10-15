@@ -1,6 +1,8 @@
+
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
+import { INestApplication, ValidationPipe } from '@nestjs/common';
 import request from 'supertest';
+import cookieParser from 'cookie-parser';
 import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module.js';
 
@@ -13,12 +15,24 @@ describe('AppController (e2e)', () => {
     }).compile();
 
     app = moduleFixture.createNestApplication();
+
+    app.setGlobalPrefix('api/v1');
+    app.use(cookieParser());
+
+    app.useGlobalPipes(
+      new ValidationPipe({
+        whitelist: true,
+        forbidNonWhitelisted: true,
+        transform: true,
+      }),
+    );
+
     await app.init();
   });
 
-  it('/ (GET)', () => {
-    return request(app.getHttpServer())
-      .get('/')
+  it('GET /api/v1 should return Hello World!', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1')
       .expect(200)
       .expect('Hello World!');
   });

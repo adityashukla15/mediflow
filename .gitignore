@@ -37,3 +37,13 @@ __pycache__/
 # Temporary files
 tmp/
 temp/
+# TypeScript build info
+*.tsbuildinfo
+
+# Generated Prisma client
+/apps/api/src/generated/
+
+# TypeScript build info
+*.tsbuildinfo
+
+*.tsbuildinfo
