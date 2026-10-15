@@ -1,3 +1,4 @@
+
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
@@ -19,15 +20,26 @@ import { RolesGuard } from './guards/roles.gaurd.js';
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => {
-        const secret =
-          configService.get<string>('JWT_ACCESS_SECRET');
+        const secret = configService.get<string>(
+          'JWT_ACCESS_SECRET',
+        );
 
         if (!secret) {
-          throw new Error('JWT_ACCESS_SECRET is not configured');
+          throw new Error(
+            'JWT_ACCESS_SECRET is not configured',
+          );
         }
 
+        const rawExpiresIn =
+          configService.get<string | number>(
+            'ACCESS_TOKEN_TTL',
+          ) ?? 900;
+
         const expiresIn =
-          configService.get<string | number>('ACCESS_TOKEN_TTL') ?? 900;
+          typeof rawExpiresIn === 'string' &&
+          /^\d+$/.test(rawExpiresIn)
+            ? Number(rawExpiresIn)
+            : rawExpiresIn;
 
         return {
           secret,
