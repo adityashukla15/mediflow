@@ -8,6 +8,10 @@ import { App } from 'supertest/types';
 
 import { AppModule } from '../src/app.module.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
+import {
+  UserRole,
+  UserStatus,
+} from '../src/generated/prisma/client.js';
 
 describe('Auth API (e2e)', () => {
   let app: INestApplication<App>;
@@ -225,5 +229,85 @@ describe('Auth API (e2e)', () => {
       .post('/api/v1/auth/refresh')
       .set('Cookie', refreshCookie)
       .expect(401);
+  });
+
+  it('rejects login for a suspended user', async () => {
+    const { email } = await registerUser();
+
+    await prisma.user.update({
+      where: { email },
+      data: { status: UserStatus.SUSPENDED },
+    });
+
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/login')
+      .send({ email, password })
+      .expect(401);
+  });
+
+  it('rejects an access token after the user is suspended', async () => {
+    const { email } = await registerUser();
+
+    const loginResponse = await request(app.getHttpServer())
+      .post('/api/v1/auth/login')
+      .send({ email, password })
+      .expect(200);
+
+    await prisma.user.update({
+      where: { email },
+      data: { status: UserStatus.SUSPENDED },
+    });
+
+    await request(app.getHttpServer())
+      .get('/api/v1/auth/me')
+      .set(
+        'Authorization',
+        `Bearer ${loginResponse.body.accessToken}`,
+      )
+      .expect(401);
+  });
+
+  it('denies a patient access to the admin endpoint', async () => {
+    const { email } = await registerUser();
+
+    const loginResponse = await request(app.getHttpServer())
+      .post('/api/v1/auth/login')
+      .send({ email, password })
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .get('/api/v1/auth/admin-test')
+      .set(
+        'Authorization',
+        `Bearer ${loginResponse.body.accessToken}`,
+      )
+      .expect(403);
+  });
+
+  it('allows an admin to access the admin endpoint', async () => {
+    const { email } = await registerUser();
+
+    // Promote this test user directly in the database.
+    // Public registration must never grant ADMIN privileges.
+    await prisma.user.update({
+      where: { email },
+      data: { role: UserRole.ADMIN },
+    });
+
+    const loginResponse = await request(app.getHttpServer())
+      .post('/api/v1/auth/login')
+      .send({ email, password })
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .get('/api/v1/auth/admin-test')
+      .set(
+        'Authorization',
+        `Bearer ${loginResponse.body.accessToken}`,
+      )
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.message).toBe('Admin access granted');
+      });
   });
 });

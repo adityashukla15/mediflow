@@ -1,3 +1,4 @@
+
 import {
   Body,
   Controller,
@@ -13,11 +14,16 @@ import {
 import type { Request, Response } from 'express';
 
 import { ConfigService } from '@nestjs/config';
+import { UserRole } from '../generated/prisma/client.js';
+
 import { AuthService } from './auth.service.js';
 import { RegisterDto } from './dto/register.dto.js';
 import { LoginDto } from './dto/login.dto.js';
 import { JwtAuthGuard } from './guards/jwt-auth.guard.js';
+import { RolesGuard } from './guards/roles.gaurd.js';
 import { CurrentUser } from './decorators/current-user.decorator.js';
+import { Roles } from './decorators/roles.decorators.js';
+
 import type { AuthenticatedUser } from './strategies/jwt.strategies.js';
 
 @Controller('auth')
@@ -118,5 +124,14 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   async me(@CurrentUser() user: AuthenticatedUser) {
     return this.authService.getCurrentUser(user.id);
+  }
+
+  @Get('admin-test')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  adminTest() {
+    return {
+      message: 'Admin access granted',
+    };
   }
 }
