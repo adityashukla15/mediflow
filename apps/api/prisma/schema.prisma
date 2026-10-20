@@ -1,8 +1,3 @@
-
-
-
-
-
 generator client {
   provider = "prisma-client"
   output   = "../src/generated/prisma"
@@ -24,6 +19,16 @@ enum UserStatus {
   SUSPENDED
 }
 
+enum DayOfWeek {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
 model User {
   id           String     @id @default(uuid())
   email        String     @unique
@@ -31,10 +36,12 @@ model User {
   role         UserRole   @default(PATIENT)
   status       UserStatus @default(ACTIVE)
 
-  sessions     Session[]
+  sessions       Session[]
+  patientProfile PatientProfile?
+  doctorProfile  DoctorProfile?
 
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([role])
   @@index([status])
@@ -47,10 +54,72 @@ model Session {
   expiresAt        DateTime
   revokedAt        DateTime?
 
-  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  createdAt        DateTime  @default(now())
+  createdAt DateTime @default(now())
 
   @@index([userId])
   @@index([expiresAt])
+}
+
+model PatientProfile {
+  id          String    @id @default(uuid())
+  userId      String    @unique
+  fullName    String
+  dateOfBirth DateTime?
+  phone       String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Department {
+  id          String  @id @default(uuid())
+  name        String  @unique
+  description String?
+  isActive    Boolean @default(true)
+
+  doctors DoctorProfile[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model DoctorProfile {
+  id              String  @id @default(uuid())
+  userId          String  @unique
+  departmentId    String
+  fullName        String
+  specialization  String
+  qualification   String?
+  consultationFee Decimal @default(0) @db.Decimal(10, 2)
+  isActive        Boolean @default(true)
+
+  user       User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  department Department       @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  schedules  DoctorSchedule[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([departmentId])
+  @@index([isActive])
+}
+
+model DoctorSchedule {
+  id        String    @id @default(uuid())
+  doctorId  String
+  dayOfWeek DayOfWeek
+  startTime String
+  endTime   String
+  isActive  Boolean   @default(true)
+
+  doctor DoctorProfile @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([doctorId, dayOfWeek])
 }

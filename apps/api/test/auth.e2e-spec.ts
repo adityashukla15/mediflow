@@ -4,7 +4,7 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import request from 'supertest';
 import cookieParser from 'cookie-parser';
 import { randomUUID } from 'node:crypto';
-import { App } from 'supertest/types';
+
 
 import { AppModule } from '../src/app.module.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
@@ -14,7 +14,7 @@ import {
 } from '../src/generated/prisma/client.js';
 
 describe('Auth API (e2e)', () => {
-  let app: INestApplication<App>;
+  let app: INestApplication;
   let prisma: PrismaService;
 
   const testEmails: string[] = [];
