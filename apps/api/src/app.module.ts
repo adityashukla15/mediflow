@@ -4,6 +4,9 @@ import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
 import { AuthModule } from './auth/auth.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
+import { PatientsModule } from './patients/patients.module.js';
+import { DepartmentsModule } from './departments/departments.module.js';
+import { DoctorsModule } from './doctors/doctors.module.js';
 
 export const { ObserveModule, ObserveInstrument } = createObserveModule();
 
@@ -16,7 +19,7 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
       appSecret: 'YOUR_APP_SECRET',
       serviceId: 'api',
     }),
-    AuthModule,PrismaModule,
+    AuthModule,PrismaModule, PatientsModule, DepartmentsModule, DoctorsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
