@@ -7,6 +7,7 @@ import { PrismaModule } from './prisma/prisma.module.js';
 import { PatientsModule } from './patients/patients.module.js';
 import { DepartmentsModule } from './departments/departments.module.js';
 import { DoctorsModule } from './doctors/doctors.module.js';
+import { AppointmentsModule } from './appointments/appointments.module.js';
 
 export const { ObserveModule, ObserveInstrument } = createObserveModule();
 
@@ -19,7 +20,7 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
       appSecret: 'YOUR_APP_SECRET',
       serviceId: 'api',
     }),
-    AuthModule,PrismaModule, PatientsModule, DepartmentsModule, DoctorsModule,
+    AuthModule,PrismaModule, PatientsModule, DepartmentsModule, DoctorsModule, AppointmentsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
