@@ -7,10 +7,12 @@ import {
 } from '@nestjs/common';
 
 import {
+  AppointmentStatus,
   DayOfWeek,
   UserRole,
   UserStatus,
 } from '../generated/prisma/client.js';
+
 import { PrismaService } from '../prisma/prisma.service.js';
 
 import { CreateDoctorDto } from './dto/create-doctor.dto.js';
@@ -60,13 +62,172 @@ export class DoctorsService {
           },
         },
         schedules: {
-          where: {
-            isActive: true
-          },
+          where: { isActive: true },
           orderBy: [{ dayOfWeek: 'asc' }, { startTime: 'asc' }],
         },
       },
     });
+  }
+
+  async findMyAppointments(userId: string) {
+    const doctor = await this.prisma.doctorProfile.findFirst({
+      where: {
+        userId,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!doctor) {
+      throw new NotFoundException(
+        'Doctor profile not found for this user',
+      );
+    }
+
+    return this.prisma.appointment.findMany({
+      where: {
+        doctorId: doctor.id,
+      },
+      orderBy: {
+        startAt: 'asc',
+      },
+      include: {
+        patient: {
+          select: {
+            id: true,
+            fullName: true,
+            phone: true,
+          },
+        },
+        doctor: {
+          select: {
+            id: true,
+            fullName: true,
+            specialization: true,
+          },
+        },
+      },
+    });
+  }
+
+  async getAvailability(id: string, dateValue: string) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue ?? '')) {
+      throw new BadRequestException(
+        'date must be in YYYY-MM-DD format',
+      );
+    }
+
+    const [year, month, day] = dateValue.split('-').map(Number);
+    const date = new Date(year, month - 1, day);
+
+    if (
+      date.getFullYear() !== year ||
+      date.getMonth() !== month - 1 ||
+      date.getDate() !== day
+    ) {
+      throw new BadRequestException('Invalid date');
+    }
+
+    // Ensure the doctor exists and is active.
+    await this.findOne(id);
+
+    const weekdays: DayOfWeek[] = [
+      DayOfWeek.SUNDAY,
+      DayOfWeek.MONDAY,
+      DayOfWeek.TUESDAY,
+      DayOfWeek.WEDNESDAY,
+      DayOfWeek.THURSDAY,
+      DayOfWeek.FRIDAY,
+      DayOfWeek.SATURDAY,
+    ];
+
+    const dayOfWeek = weekdays[date.getDay()];
+    const startOfDay = new Date(year, month - 1, day);
+    const endOfDay = new Date(year, month - 1, day + 1);
+
+    const [schedules, appointments] = await Promise.all([
+      this.prisma.doctorSchedule.findMany({
+        where: {
+          doctorId: id,
+          dayOfWeek,
+          isActive: true,
+        },
+        orderBy: { startTime: 'asc' },
+        select: {
+          startTime: true,
+          endTime: true,
+        },
+      }),
+
+      this.prisma.appointment.findMany({
+        where: {
+          doctorId: id,
+          status: {
+            in: [
+              AppointmentStatus.SCHEDULED,
+              AppointmentStatus.CONFIRMED,
+            ],
+          },
+          startAt: { lt: endOfDay },
+          endAt: { gt: startOfDay },
+        },
+        select: {
+          startAt: true,
+          endAt: true,
+        },
+      }),
+    ]);
+
+    const slotDurationMinutes = 30;
+    const slots: { startAt: string; endAt: string }[] = [];
+
+    for (const schedule of schedules) {
+      const scheduleStart = this.toMinutes(schedule.startTime);
+      const scheduleEnd = this.toMinutes(schedule.endTime);
+
+      for (
+        let minute = scheduleStart;
+        minute + slotDurationMinutes <= scheduleEnd;
+        minute += slotDurationMinutes
+      ) {
+        const slotStart = new Date(
+          year,
+          month - 1,
+          day,
+          Math.floor(minute / 60),
+          minute % 60,
+        );
+
+        const slotEnd = new Date(
+          year,
+          month - 1,
+          day,
+          Math.floor((minute + slotDurationMinutes) / 60),
+          (minute + slotDurationMinutes) % 60,
+        );
+
+        const overlaps = appointments.some(
+          (appointment) =>
+            slotStart < appointment.endAt &&
+            slotEnd > appointment.startAt,
+        );
+
+        if (!overlaps) {
+          slots.push({
+            startAt: slotStart.toISOString(),
+            endAt: slotEnd.toISOString(),
+          });
+        }
+      }
+    }
+
+    return {
+      doctorId: id,
+      date: dateValue,
+      slotDurationMinutes,
+      slots,
+    };
   }
 
   async findOne(id: string) {
@@ -95,9 +256,7 @@ export class DoctorsService {
           },
         },
         schedules: {
-          where: {
-            isActive: true
-          },
+          where: { isActive: true },
           orderBy: [{ dayOfWeek: 'asc' }, { startTime: 'asc' }],
         },
       },
@@ -246,11 +405,13 @@ export class DoctorsService {
         },
       });
     } catch (error: unknown) {
-      if (getPrismaErrorCode(error) === 'P2025') {
+      const code = getPrismaErrorCode(error);
+
+      if (code === 'P2025') {
         throw new NotFoundException('Doctor not found');
       }
 
-      if (getPrismaErrorCode(error) === 'P2003') {
+      if (code === 'P2003') {
         throw new BadRequestException('Invalid department reference');
       }
 
@@ -312,8 +473,7 @@ export class DoctorsService {
       );
     }
 
-    // Scheduling rule: a doctor can have one slot per weekday.
-    // Replace that weekday's existing slot atomically.
+    // Replace the weekday's existing schedule atomically.
     return this.prisma.$transaction(async (tx) => {
       await tx.doctorSchedule.deleteMany({
         where: {

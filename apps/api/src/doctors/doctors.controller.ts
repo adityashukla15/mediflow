@@ -7,12 +7,14 @@ import {
   Patch,
   Post,
   Put,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import { RolesGuard } from '../auth/guards/roles.gaurd.js';
 import { Roles } from '../auth/decorators/roles.decorators.js';
+import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
 import { UserRole } from '../generated/prisma/client.js';
 
 import { DoctorsService } from './doctors.service.js';
@@ -23,18 +25,42 @@ import { SetDoctorScheduleDto } from './dto/set-doctor-schedule.dto.js';
 @Controller('doctors')
 @UseGuards(JwtAuthGuard)
 export class DoctorsController {
-  constructor(private readonly doctorsService: DoctorsService) {}
+  constructor(
+    private readonly doctorsService: DoctorsService,
+  ) {}
 
+  // Get all doctors
   @Get()
   findAll() {
     return this.doctorsService.findAll();
   }
 
+  // Get logged-in doctor's appointments
+  @Get('me/appointments')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.DOCTOR)
+  findMyAppointments(
+    @CurrentUser() user: { id: string; role: UserRole },
+  ) {
+    return this.doctorsService.findMyAppointments(user.id);
+  }
+
+  // Get doctor availability for a date
+  @Get(':id/availability')
+  getAvailability(
+    @Param('id') id: string,
+    @Query('date') date: string,
+  ) {
+    return this.doctorsService.getAvailability(id, date);
+  }
+
+  // Get doctor by ID
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.doctorsService.findOne(id);
   }
 
+  // Create doctor
   @Post()
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN, UserRole.RECEPTIONIST)
@@ -42,6 +68,7 @@ export class DoctorsController {
     return this.doctorsService.create(dto);
   }
 
+  // Update doctor
   @Patch(':id')
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN, UserRole.RECEPTIONIST)
@@ -52,6 +79,7 @@ export class DoctorsController {
     return this.doctorsService.update(id, dto);
   }
 
+  // Set doctor schedule
   @Put(':id/schedules')
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN, UserRole.RECEPTIONIST)
