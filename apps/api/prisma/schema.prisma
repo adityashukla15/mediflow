@@ -1,3 +1,4 @@
+
 generator client {
   provider = "prisma-client"
   output   = "../src/generated/prisma"
@@ -27,6 +28,14 @@ enum DayOfWeek {
   FRIDAY
   SATURDAY
   SUNDAY
+}
+
+enum AppointmentStatus {
+  SCHEDULED
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+  NO_SHOW
 }
 
 model User {
@@ -69,7 +78,8 @@ model PatientProfile {
   dateOfBirth DateTime?
   phone       String?
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  appointments Appointment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -97,9 +107,10 @@ model DoctorProfile {
   consultationFee Decimal @default(0) @db.Decimal(10, 2)
   isActive        Boolean @default(true)
 
-  user       User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  department Department       @relation(fields: [departmentId], references: [id], onDelete: Restrict)
-  schedules  DoctorSchedule[]
+  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  department   Department       @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  schedules    DoctorSchedule[]
+  appointments Appointment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -122,4 +133,28 @@ model DoctorSchedule {
   updatedAt DateTime @updatedAt
 
   @@index([doctorId, dayOfWeek])
+}
+
+model Appointment {
+  id        String            @id @default(uuid())
+
+  patientId String
+  doctorId  String
+
+  startAt   DateTime          @db.Timestamptz(3)
+  endAt     DateTime          @db.Timestamptz(3)
+
+  status    AppointmentStatus @default(SCHEDULED)
+
+  reason    String?           @db.VarChar(500)
+
+  patient   PatientProfile    @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  doctor    DoctorProfile     @relation(fields: [doctorId], references: [id], onDelete: Restrict)
+
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+
+  @@index([patientId, startAt])
+  @@index([doctorId, startAt])
+  @@index([status, startAt])
 }
