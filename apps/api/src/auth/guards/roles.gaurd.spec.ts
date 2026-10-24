@@ -3,7 +3,6 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { Reflector } from '@nestjs/core';
 import { ForbiddenException, ExecutionContext } from '@nestjs/common';
 import { RolesGuard } from './roles.gaurd.js';
-import { ROLES_KEY } from '../decorators/roles.decorators.js';
 import { UserRole } from '../../generated/prisma/client.js';
 
 describe('RolesGuard', () => {

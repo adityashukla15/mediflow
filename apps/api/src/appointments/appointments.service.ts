@@ -1,6 +1,7 @@
 
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -98,7 +99,7 @@ export class AppointmentsService {
       });
     } catch (error: unknown) {
       if (this.isAppointmentOverlapConstraintError(error)) {
-        throw new BadRequestException(
+        throw new ConflictException(
           'The doctor already has an overlapping appointment',
         );
       }
@@ -283,7 +284,7 @@ export class AppointmentsService {
       });
     } catch (error: unknown) {
       if (this.isAppointmentOverlapConstraintError(error)) {
-        throw new BadRequestException(
+        throw new ConflictException(
           'The doctor already has an overlapping appointment',
         );
       }
@@ -544,7 +545,7 @@ export class AppointmentsService {
     });
 
     if (conflict) {
-      throw new BadRequestException(
+      throw new ConflictException(
         'The doctor already has an overlapping appointment',
       );
     }

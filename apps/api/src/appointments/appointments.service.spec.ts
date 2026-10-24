@@ -1,5 +1,7 @@
+
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
@@ -187,7 +189,7 @@ describe('AppointmentsService', () => {
         startAt: startAt.toISOString(),
         endAt: endAt.toISOString(),
       }),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toBeInstanceOf(ConflictException);
 
     expect(prisma.appointment.create).not.toHaveBeenCalled();
   });
@@ -254,6 +256,7 @@ describe('AppointmentsService', () => {
 
     expect(prisma.appointment.update).not.toHaveBeenCalled();
   });
+
   it('allows a patient to cancel their own scheduled appointment', async () => {
     prisma.appointment.findUnique.mockResolvedValue({
       id: 'appointment-1',
@@ -329,6 +332,7 @@ describe('AppointmentsService', () => {
 
     expect(prisma.appointment.update).not.toHaveBeenCalled();
   });
+
   it('rejects rescheduling a cancelled appointment', async () => {
     prisma.appointment.findUnique.mockResolvedValue({
       id: 'appointment-1',
@@ -382,7 +386,7 @@ describe('AppointmentsService', () => {
         startAt: startAt.toISOString(),
         endAt: endAt.toISOString(),
       }),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toBeInstanceOf(ConflictException);
 
     expect(prisma.appointment.findFirst).toHaveBeenCalled();
     expect(prisma.appointment.update).not.toHaveBeenCalled();
@@ -398,4 +402,5 @@ describe('AppointmentsService', () => {
     ).rejects.toBeInstanceOf(NotFoundException);
 
     expect(prisma.appointment.update).not.toHaveBeenCalled();
-  });});
+  });
+});

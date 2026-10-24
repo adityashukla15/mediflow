@@ -38,6 +38,34 @@ enum AppointmentStatus {
   NO_SHOW
 }
 
+enum MedicalRecordType {
+  CONSULTATION
+  DIAGNOSIS
+  PRESCRIPTION
+  LAB_REPORT
+  DISCHARGE_SUMMARY
+}
+
+enum PrescriptionStatus {
+  ACTIVE
+  SUPERSEDED
+  CANCELLED
+}
+
+enum LabReportStatus {
+  PENDING
+  COMPLETED
+  CANCELLED
+}
+
+enum AuditAction {
+  PRESCRIPTION_CREATED
+  PRESCRIPTION_UPDATED
+  PRESCRIPTION_CANCELLED
+  LAB_REPORT_CREATED
+  LAB_REPORT_UPDATED
+}
+
 model User {
   id           String     @id @default(uuid())
   email        String     @unique
@@ -45,9 +73,11 @@ model User {
   role         UserRole   @default(PATIENT)
   status       UserStatus @default(ACTIVE)
 
-  sessions       Session[]
-  patientProfile PatientProfile?
-  doctorProfile  DoctorProfile?
+  sessions          Session[]
+  patientProfile    PatientProfile?
+  doctorProfile     DoctorProfile?
+  documentsUploaded Document[]
+  auditLogs         AuditLog[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -78,8 +108,12 @@ model PatientProfile {
   dateOfBirth DateTime?
   phone       String?
 
-  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  appointments Appointment[]
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  appointments   Appointment[]
+  medicalRecords MedicalRecord[]
+  documents      Document[]
+  prescriptions  Prescription[]
+  labReports     LabReport[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -107,10 +141,13 @@ model DoctorProfile {
   consultationFee Decimal @default(0) @db.Decimal(10, 2)
   isActive        Boolean @default(true)
 
-  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  department   Department       @relation(fields: [departmentId], references: [id], onDelete: Restrict)
-  schedules    DoctorSchedule[]
-  appointments Appointment[]
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  department     Department       @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  schedules      DoctorSchedule[]
+  appointments   Appointment[]
+  medicalRecords MedicalRecord[]
+  prescriptions  Prescription[]
+  labReports     LabReport[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -136,25 +173,160 @@ model DoctorSchedule {
 }
 
 model Appointment {
-  id        String            @id @default(uuid())
-
+  id        String @id @default(uuid())
   patientId String
   doctorId  String
 
-  startAt   DateTime          @db.Timestamptz(3)
-  endAt     DateTime          @db.Timestamptz(3)
+  startAt DateTime @db.Timestamptz(3)
+  endAt   DateTime @db.Timestamptz(3)
 
-  status    AppointmentStatus @default(SCHEDULED)
+  status AppointmentStatus @default(SCHEDULED)
+  reason String?           @db.VarChar(500)
 
-  reason    String?           @db.VarChar(500)
+  patient       PatientProfile  @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  doctor        DoctorProfile   @relation(fields: [doctorId], references: [id], onDelete: Restrict)
+  medicalRecords MedicalRecord[]
+  prescriptions Prescription[]
+  labReports    LabReport[]
 
-  patient   PatientProfile    @relation(fields: [patientId], references: [id], onDelete: Restrict)
-  doctor    DoctorProfile     @relation(fields: [doctorId], references: [id], onDelete: Restrict)
-
-  createdAt DateTime          @default(now())
-  updatedAt DateTime          @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([patientId, startAt])
   @@index([doctorId, startAt])
   @@index([status, startAt])
+}
+
+model MedicalRecord {
+  id            String            @id @default(uuid())
+  patientId     String
+  doctorId      String
+  appointmentId String?
+  recordType    MedicalRecordType
+  title         String            @db.VarChar(200)
+  description   String            @db.Text
+
+  patient     PatientProfile @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  doctor      DoctorProfile  @relation(fields: [doctorId], references: [id], onDelete: Restrict)
+  appointment Appointment?   @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+
+  documents Document[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([patientId, createdAt])
+  @@index([doctorId, createdAt])
+  @@index([appointmentId])
+  @@index([recordType, createdAt])
+}
+
+model Document {
+  id           String  @id @default(uuid())
+  patientId    String
+  uploadedById String
+  recordId     String?
+
+  fileName   String @db.VarChar(255)
+  storageKey String @unique @db.VarChar(512)
+  mimeType   String @db.VarChar(127)
+  sizeBytes  Int
+  checksum   String @db.Char(64)
+
+  patient    PatientProfile @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  uploadedBy User           @relation(fields: [uploadedById], references: [id], onDelete: Restrict)
+  record     MedicalRecord? @relation(fields: [recordId], references: [id], onDelete: SetNull)
+  labReport  LabReport?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([patientId, createdAt])
+  @@index([uploadedById, createdAt])
+  @@index([recordId])
+}
+
+model Prescription {
+  id            String             @id @default(uuid())
+  patientId     String
+  doctorId      String
+  appointmentId String
+  status        PrescriptionStatus @default(ACTIVE)
+  notes         String?            @db.VarChar(2000)
+
+  items       PrescriptionItem[]
+  patient     PatientProfile @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  doctor      DoctorProfile  @relation(fields: [doctorId], references: [id], onDelete: Restrict)
+  appointment Appointment    @relation(fields: [appointmentId], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([patientId, createdAt])
+  @@index([doctorId, createdAt])
+  @@index([appointmentId])
+  @@index([status, createdAt])
+}
+
+model PrescriptionItem {
+  id             String @id @default(uuid())
+  prescriptionId String
+
+  medicineName String  @db.VarChar(200)
+  strength     String? @db.VarChar(100)
+  dosage       String  @db.VarChar(200)
+  frequency    String  @db.VarChar(200)
+  durationDays Int
+  quantity     Int?
+  instructions String? @db.VarChar(1000)
+
+  prescription Prescription @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([prescriptionId])
+}
+
+model LabReport {
+  id            String  @id @default(uuid())
+  patientId     String
+  doctorId      String
+  appointmentId String?
+  documentId    String? @unique
+
+  testName      String          @db.VarChar(200)
+  labName       String?         @db.VarChar(200)
+  resultSummary String?         @db.VarChar(5000)
+  status        LabReportStatus @default(PENDING)
+  reportedAt    DateTime?
+
+  patient     PatientProfile @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  doctor      DoctorProfile  @relation(fields: [doctorId], references: [id], onDelete: Restrict)
+  appointment Appointment?   @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  document    Document?      @relation(fields: [documentId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([patientId, createdAt])
+  @@index([doctorId, createdAt])
+  @@index([appointmentId])
+  @@index([status, createdAt])
+}
+
+model AuditLog {
+  id         String      @id @default(uuid())
+  actorId    String?
+  action     AuditAction
+  entityType String      @db.VarChar(100)
+  entityId   String      @db.VarChar(100)
+  metadata   Json?
+  createdAt  DateTime    @default(now())
+
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([actorId, createdAt])
+  @@index([entityType, entityId, createdAt])
+  @@index([action, createdAt])
 }

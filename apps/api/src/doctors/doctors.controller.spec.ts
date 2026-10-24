@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DoctorsController } from './doctors.controller.js';
 import { DoctorsService } from './doctors.service.js';
-import { UserRole } from '../generated/prisma/client.js';
+
 
 describe('DoctorsController', () => {
   let controller: DoctorsController;
