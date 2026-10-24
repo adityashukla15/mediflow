@@ -2,6 +2,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { PatientsController } from './patients.controller.js';
 import { PatientsService } from './patients.service.js';
+import { MedicalRecordsService } from '../medical-records/medical-records.service.js';
 
 describe('PatientsController', () => {
   let controller: PatientsController;
@@ -13,6 +14,12 @@ describe('PatientsController', () => {
         {
           provide: PatientsService,
           useValue: {},
+        },
+        {
+          provide: MedicalRecordsService,
+          useValue: {
+            findForPatient: vi.fn(),
+          },
         },
       ],
     }).compile();
