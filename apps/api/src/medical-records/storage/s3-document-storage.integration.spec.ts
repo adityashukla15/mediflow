@@ -1,5 +1,5 @@
 ﻿import 'dotenv/config';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { S3DocumentStorageService } from './s3-document-storage.service.js';
@@ -8,8 +8,12 @@ const runIntegration = process.env.RUN_S3_INTEGRATION === '1';
 const integration = runIntegration ? describe : describe.skip;
 
 integration('Silo S3 integration', () => {
-  const storage = new S3DocumentStorageService();
+  let storage: S3DocumentStorageService;
   const keys: string[] = [];
+
+  beforeAll(() => {
+    storage = new S3DocumentStorageService();
+  });
 
   afterAll(async () => {
     for (const key of keys) {
