@@ -1,0 +1,1 @@
+export { AppointmentRemindersProcessor } from './appointment-reminders.processor.js';

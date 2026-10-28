@@ -4,16 +4,23 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 
 import {
   AppointmentStatus,
   DayOfWeek,
+  EmailOutboxEvent,
   UserRole,
   UserStatus,
 } from '../generated/prisma/client.js';
+
 import { PrismaService } from '../prisma/prisma.service.js';
+import { NotificationsService } from '../notifications/notifications.service.js';
+import { EmailOutboxService } from '../email/email-outbox.service.js';
+import { AppointmentRemindersProcessor } from '../appointment-reminders/appointment-reminders.processor.js';
+
 import { CreateAppointmentDto } from './dto/create-appointment.dto.js';
 import { RescheduleAppointmentDto } from './dto/reschedule-appointment.dto.js';
 import { UpdateAppointmentStatusDto } from './dto/update-appointment-status.dto.js';
@@ -24,6 +31,11 @@ type AppointmentUser = {
   role: UserRole;
 };
 
+type AppointmentReminderActions = {
+  scheduleForAppointment?: (appointmentId: string) => Promise<void>;
+  cancelForAppointment?: (appointmentId: string) => Promise<void>;
+};
+
 const ACTIVE_APPOINTMENT_STATUSES: AppointmentStatus[] = [
   AppointmentStatus.SCHEDULED,
   AppointmentStatus.CONFIRMED,
@@ -31,7 +43,14 @@ const ACTIVE_APPOINTMENT_STATUSES: AppointmentStatus[] = [
 
 @Injectable()
 export class AppointmentsService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(AppointmentsService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notificationsService: NotificationsService,
+    private readonly emailOutboxService: EmailOutboxService,
+    private readonly appointmentRemindersService: AppointmentRemindersProcessor,
+  ) {}
 
   async create(user: AppointmentUser, dto: CreateAppointmentDto) {
     if (user.role !== UserRole.PATIENT) {
@@ -47,7 +66,10 @@ export class AppointmentsService {
 
     const patient = await this.prisma.patientProfile.findUnique({
       where: { userId: user.id },
-      select: { id: true },
+      select: {
+        id: true,
+        fullName: true,
+      },
     });
 
     if (!patient) {
@@ -68,7 +90,16 @@ export class AppointmentsService {
           },
         },
       },
-      select: { id: true },
+      select: {
+        id: true,
+        userId: true,
+        fullName: true,
+        user: {
+          select: {
+            email: true,
+          },
+        },
+      },
     });
 
     if (!doctor) {
@@ -78,8 +109,12 @@ export class AppointmentsService {
     await this.validateDoctorSchedule(doctor.id, startAt, endAt);
     await this.ensureNoOverlap(doctor.id, startAt, endAt);
 
+    let appointment: Awaited<
+      ReturnType<typeof this.prisma.appointment.create>
+    >;
+
     try {
-      return await this.prisma.appointment.create({
+      appointment = await this.prisma.appointment.create({
         data: {
           patientId: patient.id,
           doctorId: doctor.id,
@@ -103,8 +138,35 @@ export class AppointmentsService {
           'The doctor already has an overlapping appointment',
         );
       }
+
       throw error;
     }
+
+    // Schedule reminders without failing the booking if scheduling fails.
+    await this.scheduleRemindersSafely(appointment.id);
+
+    await this.notifyAppointmentParticipants({
+      appointmentId: appointment.id,
+      event: 'BOOKED',
+      dedupeSuffix: 'BOOKED',
+      patientUserId: user.id,
+      doctorUserId: doctor.userId,
+      patientMessage: `Your appointment has been booked for ${startAt.toLocaleString()}.`,
+      doctorMessage: `A new appointment has been booked for ${startAt.toLocaleString()}.`,
+    });
+
+    // Queue emails for asynchronous delivery by the outbox processor.
+    await this.sendAppointmentEmails(EmailOutboxEvent.BOOKED, {
+      appointmentId: appointment.id,
+      patientEmail: user.email,
+      patientName: patient.fullName,
+      doctorEmail: doctor.user.email,
+      doctorName: doctor.fullName,
+      startAt,
+      endAt,
+    });
+
+    return appointment;
   }
 
   async findAll(user: AppointmentUser) {
@@ -184,7 +246,6 @@ export class AppointmentsService {
     }
   }
 
-  // Get one appointment after checking the current user's access.
   async findOne(user: AppointmentUser, appointmentId: string) {
     await this.getAuthorizedAppointment(user, appointmentId);
 
@@ -239,6 +300,25 @@ export class AppointmentsService {
       dto.endAt,
     );
 
+    if (
+      appointment.startAt.getTime() === startAt.getTime() &&
+      appointment.endAt.getTime() === endAt.getTime()
+    ) {
+      return this.prisma.appointment.update({
+        where: { id: appointment.id },
+        data: {},
+        include: {
+          doctor: {
+            select: {
+              id: true,
+              fullName: true,
+              specialization: true,
+            },
+          },
+        },
+      });
+    }
+
     const doctor = await this.prisma.doctorProfile.findFirst({
       where: {
         id: appointment.doctorId,
@@ -251,7 +331,10 @@ export class AppointmentsService {
           },
         },
       },
-      select: { id: true },
+      select: {
+        id: true,
+        userId: true,
+      },
     });
 
     if (!doctor) {
@@ -268,8 +351,12 @@ export class AppointmentsService {
       appointment.id,
     );
 
+    let updatedAppointment: Awaited<
+      ReturnType<typeof this.prisma.appointment.update>
+    >;
+
     try {
-      return await this.prisma.appointment.update({
+      updatedAppointment = await this.prisma.appointment.update({
         where: { id: appointment.id },
         data: { startAt, endAt },
         include: {
@@ -288,11 +375,34 @@ export class AppointmentsService {
           'The doctor already has an overlapping appointment',
         );
       }
+
       throw error;
     }
+
+    // Cancel stale reminders and schedule them for the new appointment time.
+    await this.scheduleRemindersSafely(updatedAppointment.id);
+
+    const patient = await this.prisma.patientProfile.findUnique({
+      where: { id: appointment.patientId },
+      select: { userId: true },
+    });
+
+    await this.notifyAppointmentParticipants({
+      appointmentId: appointment.id,
+      event: 'RESCHEDULED',
+      dedupeSuffix:
+        `${appointment.startAt.toISOString()}_` +
+        `${appointment.endAt.toISOString()}_` +
+        `${startAt.toISOString()}_${endAt.toISOString()}`,
+      patientUserId: patient?.userId,
+      doctorUserId: doctor.userId,
+      patientMessage: `Your appointment has been rescheduled to ${startAt.toLocaleString()}.`,
+      doctorMessage: `An appointment has been rescheduled to ${startAt.toLocaleString()}.`,
+    });
+
+    return updatedAppointment;
   }
 
-  // Cancel an appointment using the existing status-transition rules.
   async cancel(user: AppointmentUser, appointmentId: string) {
     const appointment = await this.getAuthorizedAppointment(
       user,
@@ -326,7 +436,21 @@ export class AppointmentsService {
       );
     }
 
-    return this.prisma.appointment.update({
+    if (appointment.status === dto.status) {
+      return this.prisma.appointment.findUnique({
+        where: { id: appointment.id },
+        include: {
+          patient: {
+            select: { id: true, fullName: true },
+          },
+          doctor: {
+            select: { id: true, fullName: true },
+          },
+        },
+      });
+    }
+
+    const updatedAppointment = await this.prisma.appointment.update({
       where: { id: appointment.id },
       data: { status: dto.status },
       include: {
@@ -338,6 +462,248 @@ export class AppointmentsService {
         },
       },
     });
+
+    // No reminders should remain active for terminal appointment statuses.
+    if (
+      dto.status === AppointmentStatus.CANCELLED ||
+      dto.status === AppointmentStatus.COMPLETED ||
+      dto.status === AppointmentStatus.NO_SHOW
+    ) {
+      await this.cancelRemindersSafely(appointment.id);
+    }
+
+    const [patient, doctor] = await Promise.all([
+      this.prisma.patientProfile.findUnique({
+        where: { id: appointment.patientId },
+        select: {
+          userId: true,
+          user: {
+            select: { email: true },
+          },
+        },
+      }),
+      this.prisma.doctorProfile.findUnique({
+        where: { id: appointment.doctorId },
+        select: {
+          userId: true,
+          user: {
+            select: { email: true },
+          },
+        },
+      }),
+    ]);
+
+    const event = this.getStatusEvent(dto.status);
+
+    const statusMessages: Record<AppointmentStatus, string> = {
+      [AppointmentStatus.SCHEDULED]: 'has been scheduled',
+      [AppointmentStatus.CONFIRMED]: 'has been confirmed',
+      [AppointmentStatus.CANCELLED]: 'has been cancelled',
+      [AppointmentStatus.COMPLETED]: 'has been marked as completed',
+      [AppointmentStatus.NO_SHOW]: 'has been marked as a no-show',
+    };
+
+    const message = `Your appointment ${statusMessages[dto.status]}.`;
+
+    await this.notifyAppointmentParticipants({
+      appointmentId: appointment.id,
+      event,
+      dedupeSuffix:
+        `${appointment.status}_TO_${dto.status}_` +
+        `${updatedAppointment.updatedAt instanceof Date
+          ? updatedAppointment.updatedAt.toISOString()
+          : Date.now()}`,
+      patientUserId: patient?.userId,
+      doctorUserId: doctor?.userId,
+      patientMessage: message,
+      doctorMessage: `An appointment ${statusMessages[dto.status]}.`,
+    });
+
+    if (dto.status === AppointmentStatus.CANCELLED) {
+      await this.sendAppointmentEmails(EmailOutboxEvent.CANCELLED, {
+        appointmentId: updatedAppointment.id,
+        patientEmail: patient?.user?.email,
+        patientName: updatedAppointment.patient.fullName,
+        doctorEmail: doctor?.user?.email,
+        doctorName: updatedAppointment.doctor.fullName,
+        startAt: updatedAppointment.startAt,
+        endAt: updatedAppointment.endAt,
+      });
+    }
+
+    return updatedAppointment;
+  }
+
+  private async scheduleRemindersSafely(
+    appointmentId: string,
+  ): Promise<void> {
+    try {
+      const reminders = this.appointmentRemindersService as unknown as
+        AppointmentReminderActions;
+
+      if (!reminders.scheduleForAppointment) {
+        this.logger.warn(
+          `Reminder scheduling is unavailable for appointment ${appointmentId}`,
+        );
+        return;
+      }
+
+      await reminders.scheduleForAppointment(appointmentId);
+    } catch (error: unknown) {
+      const reason =
+        error instanceof Error ? error.message : 'Unknown error';
+
+      this.logger.error(
+        `Could not schedule reminders for appointment ${appointmentId}: ${reason}`,
+      );
+    }
+  }
+
+  private async cancelRemindersSafely(
+    appointmentId: string,
+  ): Promise<void> {
+    try {
+      const reminders = this.appointmentRemindersService as unknown as
+        AppointmentReminderActions;
+
+      if (!reminders.cancelForAppointment) {
+        this.logger.warn(
+          `Reminder cancellation is unavailable for appointment ${appointmentId}`,
+        );
+        return;
+      }
+
+      await reminders.cancelForAppointment(appointmentId);
+    } catch (error: unknown) {
+      const reason =
+        error instanceof Error ? error.message : 'Unknown error';
+
+      this.logger.error(
+        `Could not cancel reminders for appointment ${appointmentId}: ${reason}`,
+      );
+    }
+  }
+
+  private async sendAppointmentEmails(
+    event: EmailOutboxEvent,
+    input: {
+      appointmentId: string;
+      patientEmail?: string | null;
+      patientName?: string | null;
+      doctorEmail?: string | null;
+      doctorName?: string | null;
+      startAt: Date;
+      endAt: Date;
+    },
+  ): Promise<void> {
+    if (
+      !input.patientEmail?.trim() ||
+      !input.patientName?.trim() ||
+      !input.doctorEmail?.trim() ||
+      !input.doctorName?.trim()
+    ) {
+      this.logger.warn(
+        `Skipping appointment email enqueue because recipient details are incomplete for appointment ${input.appointmentId}.`,
+      );
+      return;
+    }
+
+    try {
+      await this.emailOutboxService.enqueueAppointmentEmails({
+        appointmentId: input.appointmentId,
+        event,
+        patientEmail: input.patientEmail,
+        patientName: input.patientName,
+        doctorEmail: input.doctorEmail,
+        doctorName: input.doctorName,
+        startAt: input.startAt,
+        endAt: input.endAt,
+      });
+    } catch (error: unknown) {
+      const reason =
+        error instanceof Error ? error.message : 'Unknown error';
+
+      this.logger.error(
+        `Could not enqueue appointment email jobs for appointment ${input.appointmentId}: ${reason}`,
+      );
+    }
+  }
+
+  private async notifyAppointmentParticipants(input: {
+    appointmentId: string;
+    event: string;
+    dedupeSuffix: string;
+    patientUserId?: string | null;
+    doctorUserId?: string | null;
+    patientMessage: string;
+    doctorMessage: string;
+  }) {
+    const recipients = [
+      input.patientUserId
+        ? {
+            userId: input.patientUserId,
+            title: this.getNotificationTitle(input.event),
+            message: input.patientMessage,
+          }
+        : null,
+      input.doctorUserId
+        ? {
+            userId: input.doctorUserId,
+            title: this.getNotificationTitle(input.event),
+            message: input.doctorMessage,
+          }
+        : null,
+    ].filter(
+      (
+        recipient,
+      ): recipient is {
+        userId: string;
+        title: string;
+        message: string;
+      } => recipient !== null,
+    );
+
+    if (recipients.length === 0) {
+      return;
+    }
+
+    await this.notificationsService.createAppointmentEventNotifications({
+      appointmentId: input.appointmentId,
+      event: input.event,
+      dedupeSuffix: input.dedupeSuffix,
+      recipients,
+    });
+  }
+
+  private getNotificationTitle(event: string): string {
+    const titles: Record<string, string> = {
+      BOOKED: 'Appointment booked',
+      RESCHEDULED: 'Appointment rescheduled',
+      CONFIRMED: 'Appointment confirmed',
+      CANCELLED: 'Appointment cancelled',
+      COMPLETED: 'Appointment completed',
+      NO_SHOW: 'Appointment status updated',
+      STATUS_UPDATED: 'Appointment status updated',
+    };
+
+    return titles[event] ?? 'Appointment status updated';
+  }
+
+  private getStatusEvent(status: AppointmentStatus): string {
+    switch (status) {
+      case AppointmentStatus.SCHEDULED:
+        return 'STATUS_UPDATED';
+      case AppointmentStatus.CONFIRMED:
+        return 'CONFIRMED';
+      case AppointmentStatus.CANCELLED:
+        return 'CANCELLED';
+      case AppointmentStatus.COMPLETED:
+        return 'COMPLETED';
+      case AppointmentStatus.NO_SHOW:
+        return 'NO_SHOW';
+      default:
+        return 'STATUS_UPDATED';
+    }
   }
 
   private async getAuthorizedAppointment(
@@ -351,6 +717,9 @@ export class AppointmentsService {
         patientId: true,
         doctorId: true,
         status: true,
+        startAt: true,
+        endAt: true,
+        updatedAt: true,
       },
     });
 
@@ -477,8 +846,6 @@ export class AppointmentsService {
     startAt: Date,
     endAt: Date,
   ) {
-    // Schedule times are stored as local wall-clock times.
-    // Until the clinic timezone is configured, use the server's local timezone.
     if (startAt.toDateString() !== endAt.toDateString()) {
       throw new BadRequestException(
         'An appointment must start and end on the same local day',
