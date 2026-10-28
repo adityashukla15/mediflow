@@ -38,6 +38,31 @@ enum AppointmentStatus {
   NO_SHOW
 }
 
+enum AppointmentReminderKind {
+  TWENTY_FOUR_HOURS
+  ONE_HOUR
+}
+
+enum AppointmentReminderStatus {
+  PENDING
+  PROCESSING
+  SENT
+  CANCELLED
+}
+
+enum EmailOutboxEvent {
+  BOOKED
+  CANCELLED
+}
+
+enum EmailOutboxStatus {
+  PENDING
+  PROCESSING
+  SENT
+  FAILED
+  CANCELLED
+}
+
 enum MedicalRecordType {
   CONSULTATION
   DIAGNOSIS
@@ -66,6 +91,20 @@ enum AuditAction {
   LAB_REPORT_UPDATED
 }
 
+enum NotificationType {
+  APPOINTMENT
+  PRESCRIPTION
+  LAB_REPORT
+  MEDICAL_RECORD
+  REMINDER
+  SYSTEM
+}
+
+enum NotificationStatus {
+  UNREAD
+  READ
+}
+
 model User {
   id           String     @id @default(uuid())
   email        String     @unique
@@ -78,6 +117,7 @@ model User {
   doctorProfile     DoctorProfile?
   documentsUploaded Document[]
   auditLogs         AuditLog[]
+  notifications     Notification[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -183,11 +223,12 @@ model Appointment {
   status AppointmentStatus @default(SCHEDULED)
   reason String?           @db.VarChar(500)
 
-  patient       PatientProfile  @relation(fields: [patientId], references: [id], onDelete: Restrict)
-  doctor        DoctorProfile   @relation(fields: [doctorId], references: [id], onDelete: Restrict)
+  patient        PatientProfile        @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  doctor         DoctorProfile         @relation(fields: [doctorId], references: [id], onDelete: Restrict)
   medicalRecords MedicalRecord[]
-  prescriptions Prescription[]
-  labReports    LabReport[]
+  prescriptions  Prescription[]
+  labReports     LabReport[]
+  reminders      AppointmentReminder[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -195,6 +236,47 @@ model Appointment {
   @@index([patientId, startAt])
   @@index([doctorId, startAt])
   @@index([status, startAt])
+}
+
+model AppointmentReminder {
+  id            String                    @id @default(uuid())
+  appointmentId String
+  kind          AppointmentReminderKind
+  status        AppointmentReminderStatus @default(PENDING)
+  scheduledAt   DateTime
+  sentAt        DateTime?
+
+  appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([appointmentId, kind])
+  @@index([status, scheduledAt])
+}
+
+model EmailOutbox {
+  id             String            @id @default(uuid())
+  idempotencyKey String            @unique
+  appointmentId  String
+  event          EmailOutboxEvent
+  recipientEmail String
+  recipientName  String
+  patientName    String
+  doctorName     String
+  startAt        DateTime          @db.Timestamptz(3)
+  endAt          DateTime          @db.Timestamptz(3)
+  status         EmailOutboxStatus @default(PENDING)
+  attempts       Int               @default(0)
+  nextAttemptAt  DateTime          @default(now()) @db.Timestamptz(3)
+  lastError      String?           @db.VarChar(500)
+  sentAt         DateTime?         @db.Timestamptz(3)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, nextAttemptAt])
+  @@index([appointmentId, event])
 }
 
 model MedicalRecord {
@@ -255,9 +337,9 @@ model Prescription {
   notes         String?            @db.VarChar(2000)
 
   items       PrescriptionItem[]
-  patient     PatientProfile @relation(fields: [patientId], references: [id], onDelete: Restrict)
-  doctor      DoctorProfile  @relation(fields: [doctorId], references: [id], onDelete: Restrict)
-  appointment Appointment    @relation(fields: [appointmentId], references: [id], onDelete: Restrict)
+  patient     PatientProfile     @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  doctor      DoctorProfile      @relation(fields: [doctorId], references: [id], onDelete: Restrict)
+  appointment Appointment        @relation(fields: [appointmentId], references: [id], onDelete: Restrict)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -329,4 +411,22 @@ model AuditLog {
   @@index([actorId, createdAt])
   @@index([entityType, entityId, createdAt])
   @@index([action, createdAt])
+}
+
+model Notification {
+  id        String             @id @default(uuid())
+  userId    String
+  type      NotificationType
+  title     String             @db.VarChar(200)
+  message   String             @db.Text
+  status    NotificationStatus @default(UNREAD)
+  metadata  Json?
+  dedupeKey String?            @unique
+  readAt    DateTime?
+  createdAt DateTime           @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status, createdAt])
+  @@index([userId, createdAt])
 }
